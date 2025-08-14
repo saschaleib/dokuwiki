@@ -253,7 +253,7 @@ class auth_plugin_authldap extends AuthPlugin
                     // $key = array($key=>$regexp), only handles the first key-value
                     $regexp = current($key);
                     $key = key($key);
-                    if ($user_result[$key]) foreach ($user_result[$key] as $grpkey => $grp) {
+                    if (is_array($user_result[$key] ?? null)) foreach ($user_result[$key] as $grpkey => $grp) {
                         if ($grpkey !== 'count' && preg_match($regexp, $grp, $match)) {
                             if ($localkey == 'grps') {
                                 $info[$localkey][] = $match[1];
@@ -365,8 +365,12 @@ class auth_plugin_authldap extends AuthPlugin
         }
 
         // Generate the salted hashed password for LDAP
-        $phash = new PassHash();
-        $hash = $phash->hash_ssha($changes['pass']);
+        if ($this->getConf('modPassPlain')) {
+            $hash = $changes['pass'];
+        } else {
+            $phash = new PassHash();
+            $hash = $phash->hash_ssha($changes['pass']);
+        }
 
         // change the password
         if (!@ldap_mod_replace($this->con, $dn, ['userpassword' => $hash])) {

@@ -47,6 +47,11 @@ function auth_setup()
     global $plugin_controller;
     $AUTH_ACL = [];
 
+    // unset REMOTE_USER if empty
+    if ($INPUT->server->str('REMOTE_USER') === '') {
+        $INPUT->server->remove('REMOTE_USER');
+    }
+
     if (!$conf['useacl']) return false;
 
     // try to load auth backend from plugins
@@ -98,7 +103,7 @@ function auth_setup()
     if (!auth_tokenlogin()) {
         $ok = null;
 
-        if ($auth instanceof AuthPlugin && $auth->canDo('external')) {
+        if ($auth->canDo('external')) {
             $ok = $auth->trustExternal($INPUT->str('u'), $INPUT->str('p'), $INPUT->bool('r'));
         }
 
@@ -185,11 +190,18 @@ function auth_tokenlogin()
     global $auth;
     if (!$auth) return false;
 
-    // get the headers, either from Apache or from $_SERVER
+    $headers = [];
+
+    // try to get the headers from Apache
     if (function_exists('getallheaders')) {
-        $headers = array_change_key_case(getallheaders());
-    } else {
-        $headers = [];
+        $headers = getallheaders();
+        if (is_array($headers)) {
+            $headers = array_change_key_case($headers);
+        }
+    }
+
+    // get the headers from $_SERVER
+    if (!$headers) {
         foreach ($_SERVER as $key => $value) {
             if (substr($key, 0, 5) === 'HTTP_') {
                 $headers[strtolower(substr($key, 5))] = $value;
@@ -293,6 +305,7 @@ function auth_login($user, $pass, $sticky = false, $silent = false)
 
     if (!empty($user)) {
         //usual login
+        if (!empty($pass)) usleep(random_int(0, 250)); // add a random delay to prevent timing attacks #4491
         if (!empty($pass) && $auth->checkPass($user, $pass)) {
             // make logininfo globally available
             $INPUT->server->set('REMOTE_USER', $user);
@@ -523,7 +536,7 @@ function auth_logoff($keepbc = false)
     setcookie(DOKU_COOKIE, '', [
         'expires' => time() - 600000,
         'path' => $cookieDir,
-        'secure' => ($conf['securecookie'] && is_ssl()),
+        'secure' => ($conf['securecookie'] && \dokuwiki\Ip::isSsl()),
         'httponly' => true,
         'samesite' => $conf['samesitecookie'] ?: null, // null means browser default
     ]);
@@ -1314,6 +1327,8 @@ function act_resendpwd()
  * If the selected method needs a salt and none was given, a random one
  * is chosen.
  *
+ * You can pass null as the password to create an unusable hash.
+ *
  * @author  Andreas Gohr <andi@splitbrain.org>
  *
  * @param string $clear The clear text password
@@ -1324,6 +1339,11 @@ function act_resendpwd()
 function auth_cryptPassword($clear, $method = '', $salt = null)
 {
     global $conf;
+
+    if ($clear === null) {
+        return DOKU_UNUSABLE_PASSWORD;
+    }
+
     if (empty($method)) $method = $conf['passcrypt'];
 
     $pass = new PassHash();
@@ -1349,6 +1369,10 @@ function auth_cryptPassword($clear, $method = '', $salt = null)
  */
 function auth_verifyPassword($clear, $crypt)
 {
+    if ($crypt === DOKU_UNUSABLE_PASSWORD) {
+        return false;
+    }
+
     $pass = new PassHash();
     return $pass->verify_hash($clear, $crypt);
 }
@@ -1378,7 +1402,7 @@ function auth_setCookie($user, $pass, $sticky)
     setcookie(DOKU_COOKIE, $cookie, [
         'expires' => $time,
         'path' => $cookieDir,
-        'secure' => ($conf['securecookie'] && is_ssl()),
+        'secure' => ($conf['securecookie'] && \dokuwiki\Ip::isSsl()),
         'httponly' => true,
         'samesite' => $conf['samesitecookie'] ?: null, // null means browser default
     ]);

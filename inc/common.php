@@ -19,6 +19,7 @@ use dokuwiki\Subscriptions\PageSubscriptionSender;
 use dokuwiki\Subscriptions\SubscriberManager;
 use dokuwiki\Extension\AuthPlugin;
 use dokuwiki\Extension\Event;
+use dokuwiki\Ip;
 
 use function PHP81_BC\strftime;
 
@@ -346,24 +347,15 @@ function mediainfo()
 /**
  * Build an string of URL parameters
  *
- * @param array $params array with key-value pairs
+ * @see http_build_query()
+ * @param array|object $params the data to encode
  * @param string $sep series of pairs are separated by this character
  * @return string query string
- * @author Andreas Gohr
  *
  */
 function buildURLparams($params, $sep = '&amp;')
 {
-    $url = '';
-    $amp = false;
-    foreach ($params as $key => $val) {
-        if ($amp) $url .= $sep;
-
-        $url .= rawurlencode($key) . '=';
-        $url .= rawurlencode((string)$val);
-        $amp = true;
-    }
-    return $url;
+    return http_build_query($params, '', $sep, PHP_QUERY_RFC3986);
 }
 
 /**
@@ -778,58 +770,32 @@ function checkwordblock($text = '')
 }
 
 /**
- * Return the IP of the client
+ * Return the IP of the client.
  *
- * Honours X-Forwarded-For and X-Real-IP Proxy Headers
+ * The IP is sourced from, in order of preference:
  *
- * It returns a comma separated list of IPs if the above mentioned
- * headers are set. If the single parameter is set, it tries to return
- * a routable public address, prefering the ones suplied in the X
- * headers
+ *   - The X-Real-IP header if $conf[realip] is true.
+ *   - The X-Forwarded-For header if all the proxies are trusted by $conf[trustedproxies].
+ *   - The TCP/IP connection remote address.
+ *   - 0.0.0.0 if all else fails.
  *
- * @param boolean $single If set only a single IP is returned
- * @return string
- * @author Andreas Gohr <andi@splitbrain.org>
+ * The 'realip' config value should only be set to true if the X-Real-IP header
+ * is being added by the web server, otherwise it may be spoofed by the client.
+ *
+ * The 'trustedproxies' setting must not allow any IP, otherwise the X-Forwarded-For
+ * may be spoofed by the client.
+ *
+ * @param bool $single If set only a single IP is returned.
+ *
+ * @return string Returns an IP address if 'single' is true, or a comma-separated list
+ *                of IP addresses otherwise.
+ * @author Zebra North <mrzebra@mrzebra.co.uk>
  *
  */
 function clientIP($single = false)
 {
-    /* @var Input $INPUT */
-    global $INPUT, $conf;
-
-    $ip = [];
-    $ip[] = $INPUT->server->str('REMOTE_ADDR');
-    if ($INPUT->server->str('HTTP_X_FORWARDED_FOR')) {
-        $ip = array_merge($ip, explode(',', str_replace(' ', '', $INPUT->server->str('HTTP_X_FORWARDED_FOR'))));
-    }
-    if ($INPUT->server->str('HTTP_X_REAL_IP')) {
-        $ip = array_merge($ip, explode(',', str_replace(' ', '', $INPUT->server->str('HTTP_X_REAL_IP'))));
-    }
-
-    // remove any non-IP stuff
-    $cnt = count($ip);
-    for ($i = 0; $i < $cnt; $i++) {
-        if (filter_var($ip[$i], FILTER_VALIDATE_IP) === false) {
-            unset($ip[$i]);
-        }
-    }
-    $ip = array_values(array_unique($ip));
-    if ($ip === [] || !$ip[0]) $ip[0] = '0.0.0.0'; // for some strange reason we don't have a IP
-
-    if (!$single) return implode(',', $ip);
-
-    // skip trusted local addresses
-    foreach ($ip as $i) {
-        if (!empty($conf['trustedproxy']) && preg_match('/' . $conf['trustedproxy'] . '/', $i)) {
-            continue;
-        } else {
-            return $i;
-        }
-    }
-
-    // still here? just use the last address
-    // this case all ips in the list are trusted
-    return $ip[count($ip) - 1];
+    // Return the first IP in single mode, or all the IPs.
+    return $single ? Ip::clientIp() : implode(',', Ip::clientIps());
 }
 
 /**
@@ -1014,7 +980,7 @@ function cleanText($text)
     // if the text is not valid UTF-8 we simply assume latin1
     // this won't break any worse than it breaks with the wrong encoding
     // but might actually fix the problem in many cases
-    if (!Clean::isUtf8($text)) $text = utf8_encode($text);
+    if (!Clean::isUtf8($text)) $text = Conversion::fromLatin1($text);
 
     return $text;
 }
@@ -1730,7 +1696,7 @@ function userlink($username = null, $textonly = false)
                         if (is_null($xhtml_renderer)) {
                             $xhtml_renderer = p_get_renderer('xhtml');
                         }
-                        if (empty($xhtml_renderer->interwiki)) {
+                        if ($xhtml_renderer->interwiki === []) {
                             $xhtml_renderer->interwiki = getInterwiki();
                         }
                         $shortcut = 'user';
@@ -1991,7 +1957,7 @@ function set_doku_pref($pref, $val)
         setcookie('DOKU_PREFS', $cookieVal, [
             'expires' => time() + 365 * 24 * 3600,
             'path' => $cookieDir,
-            'secure' => ($conf['securecookie'] && is_ssl()),
+            'secure' => ($conf['securecookie'] && Ip::isSsl()),
             'samesite' => 'Lax'
         ]);
     }
